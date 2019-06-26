@@ -2,13 +2,13 @@ pragma solidity ^0.5.6;
 
 import "ds-test/test.sol";
 
-import "./Airswap.sol";
+import "./Swap.sol";
 
-contract AirswapTest is DSTest {
-    Airswap airswap;
+contract SwapTest is DSTest {
+    Swap swap;
 
     function setUp() public {
-        airswap = new Airswap();
+        swap = new Swap();
     }
 
     function testFail_basic_sanity() public {
