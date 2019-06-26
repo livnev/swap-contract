@@ -4,3 +4,6 @@
 [submodule "lib/openzeppelin-solidity"]
 	path = lib/openzeppelin-solidity
 	url = git@github.com:livnev/openzeppelin-solidity.git
+[submodule "lib/ds-token"]
+	path = lib/ds-token
+	url = https://github.com/dapphub/ds-token
