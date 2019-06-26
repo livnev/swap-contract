@@ -16,11 +16,14 @@ contract Swap is Authorizable, Transferable, Verifiable {
   byte constant private CANCELED = 0x02;
 
   // Maps makers to orders by ID as TAKEN (0x01) or CANCELED (0x02)
+  // n.b. that takeId and killId are two separate parameters of an order,
+  // but if you set them to be the same then you recover the old behaviour,
+  // and setting them to different values enables O(1) mass cancels.
   mapping (address => mapping (uint256 => byte)) public makerOrderStatus;
 
   // Emitted on Swap
   event Swap(
-    uint256 indexed id,
+    uint256 indexed takeId,
     address indexed makerAddress,
     uint256 makerParam,
     address makerToken,
@@ -29,12 +32,13 @@ contract Swap is Authorizable, Transferable, Verifiable {
     address takerToken,
     address affiliateAddress,
     uint256 affiliateParam,
-    address affiliateToken
+    address affiliateToken,
+    uint256 killId
   );
 
   // Emitted on Cancel
   event Cancel(
-    uint256 indexed id,
+    uint256 indexed killId,
     address indexed makerAddress
   );
 
@@ -57,11 +61,11 @@ contract Swap is Authorizable, Transferable, Verifiable {
       "ORDER_EXPIRED");
 
     // Ensure the order has not already been taken
-    require(makerOrderStatus[order.maker.wallet][order.id] != TAKEN,
+    require(makerOrderStatus[order.maker.wallet][order.takeId] != TAKEN,
       "ORDER_ALREADY_TAKEN");
 
     // Ensure the order has not already been canceled
-    require(makerOrderStatus[order.maker.wallet][order.id] != CANCELED,
+    require(makerOrderStatus[order.maker.wallet][order.killId] != CANCELED,
       "ORDER_ALREADY_CANCELED");
 
     // Ensure the order sender is authorized
@@ -79,7 +83,7 @@ contract Swap is Authorizable, Transferable, Verifiable {
       "SIGNATURE_INVALID");
 
     // Mark the order TAKEN (0x01)
-    makerOrderStatus[order.maker.wallet][order.id] = TAKEN;
+    makerOrderStatus[order.maker.wallet][order.takeId] = TAKEN;
 
     // A null taker token is an order for ether
     if (order.taker.token == address(0)) {
@@ -128,84 +132,73 @@ contract Swap is Authorizable, Transferable, Verifiable {
       );
     }
 
-    emit Swap(order.id,
+    emit Swap(order.takeId,
       order.maker.wallet, order.maker.param, order.maker.token,
       order.taker.wallet, order.taker.param, order.taker.token,
-      order.affiliate.wallet, order.affiliate.param, order.affiliate.token
-    );
+      order.affiliate.wallet, order.affiliate.param, order.affiliate.token,
+      order.killId);
   }
 
   /**
     * @notice Atomic Token Swap (Simple)
     * @dev Determines type (ERC-20 or ERC-721) with ERC-165
     *
-    * @param id uint256
-    * @param makerWallet address
-    * @param makerParam uint256
-    * @param makerToken address
-    * @param takerWallet address
-    * @param takerParam uint256
-    * @param takerToken address
-    * @param expiry uint256
-    * @param r bytes32
-    * @param s bytes32
-    * @param v uint8
+    * @param order Order
+    * @param signature Signature
     */
   function swapSimple(
-    uint256 id,
-    address makerWallet,
-    uint256 makerParam,
-    address makerToken,
-    address takerWallet,
-    uint256 takerParam,
-    address takerToken,
-    uint256 expiry,
-    bytes32 r,
-    bytes32 s,
-    uint8 v
+    Order calldata order,
+    Signature calldata signature
   )
     external payable
   {
 
     // Ensure the order is not expired
-    require(expiry > block.timestamp,
+    require(order.expiry > block.timestamp,
       "ORDER_EXPIRED");
 
-    // Ensure the order has not already been taken or canceled
-    require(makerOrderStatus[makerWallet][id] == OPEN,
-      "ORDER_UNAVAILABLE");
+    // Ensure the order has not already been taken
+    require(makerOrderStatus[order.maker.wallet][order.takeId] != TAKEN,
+      "ORDER_ALREADY_TAKEN");
+
+    // Ensure the order has not already been canceled
+    require(makerOrderStatus[order.maker.wallet][order.killId] != CANCELED,
+      "ORDER_ALREADY_CANCELED");
 
     // Ensure the order sender is authorized
-    if (msg.sender != takerWallet) {
-      require(isAuthorized(takerWallet, msg.sender),
+    if (msg.sender != order.taker.wallet) {
+      require(isAuthorized(order.taker.wallet, msg.sender),
         "SENDER_UNAUTHORIZED");
     }
 
     // Ensure the order signature is valid
     require(isValidSimple(
-      id,
-      makerWallet,
-      makerParam,
-      makerToken,
-      takerWallet,
-      takerParam,
-      takerToken,
-      expiry,
-      r, s, v
+      order.takeId,
+      order.killId,
+      order.maker.wallet,
+      order.maker.param,
+      order.maker.token,
+      order.taker.wallet,
+      order.taker.param,
+      order.taker.token,
+      order.expiry,
+      signature.r,
+      signature.s,
+      signature.v
     ), "SIGNATURE_INVALID");
 
     // Mark the order TAKEN (0x01)
-    makerOrderStatus[makerWallet][id] = TAKEN;
+    makerOrderStatus[order.maker.wallet][order.takeId] = TAKEN;
 
     // A null taker token is an order for ether
-    if (takerToken == address(0)) {
+    if (order.taker.token == address(0)) {
 
       // Ensure the ether sent matches the taker param
-      require(msg.value == takerParam,
+      require(msg.value == order.taker.param,
         "VALUE_MUST_BE_SENT");
 
       // Transfer ether from taker to maker
-      send(makerWallet, msg.value);
+      send(order.maker.wallet, msg.value);
 
     } else {
 
@@ -214,17 +207,17 @@ contract Swap is Authorizable, Transferable, Verifiable {
         "VALUE_MUST_BE_ZERO");
 
       // Transfer token from taker to maker
-      transferAny(takerToken, takerWallet, makerWallet, takerParam);
+      transferAny(order.taker.token, order.taker.wallet, order.maker.wallet, order.taker.param);
 
     }
 
     // Transfer token from maker to taker
-    transferAny(makerToken, makerWallet, takerWallet, makerParam);
+    transferAny(order.maker.token, order.maker.wallet, order.taker.wallet, order.maker.param);
 
-    emit Swap(id,
-      makerWallet, makerParam, makerToken,
-      takerWallet, takerParam, takerToken,
-      address(0), 0, address(0)
+    emit Swap(order.takeId,
+      order.maker.wallet, order.maker.param, order.maker.token,
+      order.taker.wallet, order.taker.param, order.taker.token,
+      address(0), 0, address(0), order.killId
     );
 
   }
