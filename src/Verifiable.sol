@@ -117,6 +117,9 @@ contract Verifiable {
           signature.v, signature.r, signature.s
       );
     }
+    if (signature.version == byte(0xff)) {
+      return true;
+    }
     return false;
   }
 
